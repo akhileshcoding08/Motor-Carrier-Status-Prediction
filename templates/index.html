@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Carrier Status Predictor</title>
+
+<!--
+  =============================================================================
+  CARRIER STATUS PREDICTOR — single-file front end
+  =============================================================================
+  This page has 3 parts, in order:
+    1) <style>   — all CSS, grouped into clearly labeled sections
+    2) <body>    — the page markup: hero banner, two-column layout
+                   (left = sticky info panel, right = the prediction form),
+                   then a result panel that appears after you submit
+    3) <script>  — plain JavaScript that collects the form, POSTs it to
+                   Flask's /predict route, and animates the result in
+
+  The double-curly-brace and curly-percent pieces sprinkled through the
+  body below are Jinja2 template tags. Flask (see app.py) fills them in
+  with data from the trained model before sending the page to the
+  browser — e.g. the model name placeholder becomes "Random Forest",
+  and the "for" loops build the dropdowns/inputs automatically from the
+  model's feature list, so this file never has to be hand-edited when
+  the model changes.
+  =============================================================================
+-->
+
+<style>
+
+  /* ---------------------------------------------------------------------
+     1. DESIGN TOKENS — change these to re-theme the whole page
+  --------------------------------------------------------------------- */
+  :root {
+    --ink:        #14152b;   /* main text */
+    --muted:      #6b7280;   /* secondary text */
+    --line:       #e7e9f3;   /* borders */
+    --surface:    #ffffff;   /* card background */
+    --canvas:     #f4f6fb;   /* page background */
+
+    --brand-1:    #6d5efc;   /* violet */
+    --brand-2:    #3ea6ff;   /* sky blue */
+    --brand-3:    #ff6fb0;   /* pink accent */
+
+    --ok:         #16a34a;   /* "active" green */
+    --ok-bg:      #eafcef;
+    --bad:        #e0334f;   /* "inactive" red */
+    --bad-bg:     #fdecef;
+
+    --radius-lg:  22px;
+    --radius-md:  14px;
+    --radius-sm:  10px;
+    --shadow:     0 30px 60px -20px rgba(30, 25, 90, 0.25);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: "Inter", "Segoe UI", Roboto, -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------------------------------------------------------------------
+     2. HERO BANNER — the colorful strip at the very top of the page
+  --------------------------------------------------------------------- */
+  .hero {
+    position: relative;
+    overflow: hidden;
+    padding: 64px 24px 120px;
+    text-align: center;
+    background: linear-gradient(120deg, var(--brand-1), var(--brand-2) 55%, var(--brand-3));
+    color: #fff;
+  }
+
+  /* soft glowing blobs floating in the hero background, purely decorative */
+  .hero::before, .hero::after {
+    content: "";
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(60px);
+    opacity: 0.45;
+  }
+  .hero::before { width: 380px; height: 380px; background: #ffffff; top: -160px; left: -100px; }
+  .hero::after  { width: 320px; height: 320px; background: #1c1240; bottom: -180px; right: -80px; }
+
+  .hero-content { position: relative; z-index: 1; max-width: 720px; margin: 0 auto; }
+
+  .hero-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: rgba(255, 255, 255, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    padding: 6px 16px;
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+  }
+
+  .hero h1 {
+    font-size: clamp(2rem, 4vw, 2.9rem);
+    line-height: 1.15;
+    margin: 20px 0 14px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  .hero p {
+    font-size: 1.05rem;
+    line-height: 1.6;
+    color: rgba(255, 255, 255, 0.92);
+    margin: 0 auto;
+  }
+
+  /* the little "Model · Accuracy · AUC" stat pills under the hero text */
+  .stat-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 28px;
+  }
+
+  .stat-pill {
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    backdrop-filter: blur(6px);
+    padding: 10px 20px;
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+    text-align: left;
+  }
+
+  .stat-pill b { display: block; font-size: 1.05rem; }
+
+  /* ---------------------------------------------------------------------
+     3. PAGE LAYOUT — two columns: sticky info panel + form
+  --------------------------------------------------------------------- */
+  .page {
+    max-width: 1080px;
+    margin: -80px auto 60px;   /* pulled up to overlap the hero */
+    padding: 0 24px;
+    position: relative;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+
+  @media (max-width: 860px) {
+    .page { grid-template-columns: 1fr; margin-top: -60px; }
+  }
+
+  /* left column: sticky "about the model" card */
+  .info-panel {
+    position: sticky;
+    top: 24px;
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    padding: 28px 24px;
+  }
+
+  .info-panel .icon-badge {
+    width: 52px; height: 52px;
+    border-radius: 16px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.5rem;
+    background: linear-gradient(135deg, var(--brand-1), var(--brand-2));
+    margin-bottom: 16px;
+  }
+
+  .info-panel h3 { margin: 0 0 8px; font-size: 1.1rem; }
+  .info-panel p { color: var(--muted); font-size: 0.88rem; line-height: 1.6; margin: 0 0 18px; }
+
+  .info-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+  .info-list li {
+    display: flex; align-items: flex-start; gap: 10px;
+    font-size: 0.85rem; color: var(--ink);
+  }
+  .info-list li .tick {
+    flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--ok-bg); color: var(--ok);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.7rem; font-weight: 900;
+  }
+
+  /* right column: everything form-related */
+  .form-column { display: flex; flex-direction: column; gap: 20px; }
+
+  .card {
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    padding: 30px;
+  }
+
+  .card-heading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 22px;
+  }
+
+  .card-heading .num {
+    width: 30px; height: 30px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, var(--brand-1), var(--brand-2));
+    color: #fff; font-weight: 800; font-size: 0.85rem;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .card-heading h2 { margin: 0; font-size: 1.05rem; }
+  .card-heading span.sub { display: block; font-size: 0.8rem; color: var(--muted); font-weight: 400; }
+
+  /* ---------------------------------------------------------------------
+     4. FORM FIELDS — number inputs, selects, and toggle switches
+  --------------------------------------------------------------------- */
+  .field-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 16px;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 6px; }
+
+  .field label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+
+  .field input[type="number"],
+  .field select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    border: 1.5px solid var(--line);
+    background: #fafbff;
+    font-size: 0.94rem;
+    color: var(--ink);
+    font-family: inherit;
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  }
+
+  .field select {
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M0 0l5 6 5-6z" fill="%236b7280"/></svg>');
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+  }
+
+  .field input[type="number"]:focus,
+  .field select:focus {
+    outline: none;
+    border-color: var(--brand-2);
+    box-shadow: 0 0 0 4px rgba(62, 166, 255, 0.15);
+    background: #fff;
+  }
+
+  /* toggle switches for the yes/no fields (hazmat, prior revoke, etc.) */
+  .toggle-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 12px;
+    margin-top: 18px;
+  }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: #fafbff;
+    border: 1.5px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+  }
+
+  .toggle-row label { font-size: 0.86rem; font-weight: 600; color: var(--ink); }
+
+  .switch { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+
+  .switch .track {
+    position: absolute; inset: 0;
+    background: #d7dbe8;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .switch .track::before {
+    content: "";
+    position: absolute;
+    height: 20px; width: 20px;
+    left: 3px; bottom: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  }
+  .switch input:checked + .track { background: linear-gradient(135deg, var(--brand-1), var(--brand-2)); }
+  .switch input:checked + .track::before { transform: translateX(20px); }
+
+  /* ---------------------------------------------------------------------
+     5. SUBMIT BUTTON
+  --------------------------------------------------------------------- */
+  .submit-row { display: flex; justify-content: center; margin-top: 6px; }
+
+  #predictBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    border: none;
+    cursor: pointer;
+    padding: 15px 40px;
+    font-size: 1rem;
+    font-weight: 700;
+    color: #fff;
+    border-radius: 999px;
+    background: linear-gradient(135deg, var(--brand-1), var(--brand-2));
+    box-shadow: 0 16px 30px -10px rgba(109, 94, 252, 0.55);
+    transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  }
+  #predictBtn:hover  { transform: translateY(-2px); box-shadow: 0 20px 36px -8px rgba(109, 94, 252, 0.6); }
+  #predictBtn:active { transform: translateY(0); }
+  #predictBtn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+  #predictBtn .spinner {
+    display: none;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.5);
+    border-top-color: #fff;
+    animation: spin 0.7s linear infinite;
+  }
+  #predictBtn.loading .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------------------------------------------------------------------
+     6. RESULT PANEL — appears below the form after a prediction
+  --------------------------------------------------------------------- */
+  #result {
+    display: none;
+    border-radius: var(--radius-lg);
+    padding: 32px;
+    text-align: center;
+    box-shadow: var(--shadow);
+    animation: riseIn 0.4s ease;
+  }
+
+  @keyframes riseIn {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  #result.is-active   { background: var(--ok-bg);  border: 1.5px solid #b6ecc7; }
+  #result.is-inactive { background: var(--bad-bg); border: 1.5px solid #f6c3cd; }
+
+  .result-icon {
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.8rem;
+    margin: 0 auto 14px;
+  }
+  #result.is-active   .result-icon { background: #d5f5e0; color: var(--ok); }
+  #result.is-inactive .result-icon { background: #fbd9df; color: var(--bad); }
+
+  #result h2 { margin: 0 0 6px; font-size: 1.5rem; }
+  #result.is-active   h2 { color: #0f7a37; }
+  #result.is-inactive h2 { color: #a91f39; }
+  #result p.sub { color: var(--muted); margin: 0 0 22px; font-size: 0.9rem; }
+
+  .prob-wrap { max-width: 420px; margin: 0 auto; }
+  .prob-track {
+    background: #e4e7f2;
+    border-radius: 999px;
+    height: 16px;
+    overflow: hidden;
+  }
+  .prob-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--bad), #f5c451, var(--ok));
+    transition: width 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .prob-labels {
+    display: flex; justify-content: space-between;
+    font-size: 0.76rem; color: var(--muted); margin-top: 8px;
+  }
+  .prob-labels b { color: var(--ink); }
+
+  .error-box {
+    display: none;
+    margin-top: 4px;
+    background: #fff6e5;
+    border: 1.5px solid #f6c453;
+    color: #8a5b00;
+    padding: 14px 18px;
+    border-radius: var(--radius-sm);
+    font-size: 0.86rem;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.78rem;
+    padding: 0 24px 40px;
+  }
+
+</style>
+</head>
+
+<body>
+
+  <!-- =====================================================================
+       HERO — title, description, and quick model stats
+  ====================================================================== -->
+  <section class="hero">
+    <div class="hero-content">
+      <span class="hero-eyebrow">🚚 FMCSA MCS-150 · Machine Learning</span>
+      <h1>Carrier Status Predictor</h1>
+      <p>
+        Fill in a motor carrier's fleet, driver, and registration details below
+        to get a live prediction of whether its FMCSA registration is
+        <strong>Active</strong> or <strong>Inactive</strong>.
+      </p>
+
+      <div class="stat-row">
+        <div class="stat-pill">Model<br><b>{{ model_name }}</b></div>
+        <div class="stat-pill">Accuracy<br><b>{{ "%.1f"|format(metrics.accuracy * 100) }}%</b></div>
+        <div class="stat-pill">ROC-AUC<br><b>{{ "%.3f"|format(metrics.roc_auc) }}</b></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       MAIN LAYOUT — sticky info panel (left) + form (right)
+  ====================================================================== -->
+  <div class="page">
+
+    <!-- ---- LEFT: sticky "about this tool" panel ---- -->
+    <aside class="info-panel">
+      <div class="icon-badge">📊</div>
+      <h3>How this works</h3>
+      <p>
+        A Random Forest model was trained on ~537,000 motor carrier records
+        from the FMCSA MCS-150 Census. It learned the patterns that separate
+        active carriers from inactive ones.
+      </p>
+      <ul class="info-list">
+        <li><span class="tick">✓</span> Fill in whatever fields you know — blanks are handled automatically.</li>
+        <li><span class="tick">✓</span> Prediction updates instantly, no page reload.</li>
+        <li><span class="tick">✓</span> Results include a confidence probability, not just a label.</li>
+      </ul>
+    </aside>
+
+    <!-- ---- RIGHT: the prediction form ---- -->
+    <div class="form-column">
+      <form id="predictForm">
+
+        <!-- Card 1: numeric fleet / driver fields, built from feature_num -->
+        <div class="card">
+          <div class="card-heading">
+            <div class="num">1</div>
+            <div>
+              <h2>Fleet &amp; driver details</h2>
+              <span class="sub">Leave any field blank if unknown</span>
+            </div>
+          </div>
+
+          <div class="field-grid">
+            {# Loop over every numeric feature except the yes/no ones, which get their own toggle section below #}
+            {% for col in feature_num %}
+              {% if col not in binary_fields %}
+              <div class="field">
+                <label for="{{ col }}">{{ field_labels.get(col, col) }}</label>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  id="{{ col }}"
+                  name="{{ col }}"
+                  placeholder="e.g. {{ num_ranges[col].median }}"
+                >
+              </div>
+              {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+
+        <!-- Card 2: dropdowns + toggles, built from feature_cat and binary_fields -->
+        <div class="card">
+          <div class="card-heading">
+            <div class="num">2</div>
+            <div>
+              <h2>Carrier profile</h2>
+              <span class="sub">Operating type, location, and structure</span>
+            </div>
+          </div>
+
+          <div class="field-grid">
+            {# Loop over every categorical feature and render it as a <select> #}
+            {% for col in feature_cat %}
+              <div class="field">
+                <label for="{{ col }}">{{ field_labels.get(col, col) }}</label>
+                <select id="{{ col }}" name="{{ col }}">
+                  <option value="">-- Select --</option>
+                  {% for opt in cat_options[col] %}
+                    {% if col == 'CARRIER_OPERATION' %}
+                      <option value="{{ opt }}">{{ op_labels.get(opt, opt) }}</option>
+                    {% else %}
+                      <option value="{{ opt }}">{{ opt }}</option>
+                    {% endif %}
+                  {% endfor %}
+                </select>
+              </div>
+            {% endfor %}
+          </div>
+
+          <div class="toggle-grid">
+            {# Loop over the yes/no fields and render each as a switch #}
+            {% for col in feature_num %}
+              {% if col in binary_fields %}
+              <div class="toggle-row">
+                <label for="{{ col }}">{{ field_labels.get(col, col) }}</label>
+                <div class="switch">
+                  <input type="checkbox" id="{{ col }}" name="{{ col }}">
+                  <span class="track"></span>
+                </div>
+              </div>
+              {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="submit-row">
+          <button type="submit" id="predictBtn">
+            <span class="spinner"></span>
+            <span class="btn-text">Predict Status</span>
+          </button>
+        </div>
+      </form>
+
+      <!-- Result panel: hidden until the first prediction comes back -->
+      <div id="result">
+        <div class="result-icon" id="resultIcon"></div>
+        <h2 id="resultTitle"></h2>
+        <p class="sub" id="resultSub"></p>
+        <div class="prob-wrap">
+          <div class="prob-track"><div class="prob-fill" id="probFill"></div></div>
+          <div class="prob-labels">
+            <span>Inactive</span>
+            <b id="probText"></b>
+            <span>Active</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="error-box" id="errorBox"></div>
+    </div>
+  </div>
+
+  <footer>Built on the FMCSA MCS-150 Motor Carrier Census · Predictions are illustrative, not official FMCSA data.</footer>
+
+  <!-- =====================================================================
+       SCRIPT — collect the form, call /predict, animate the result
+  ====================================================================== -->
+  <script>
+    const form      = document.getElementById('predictForm');
+    const btn       = document.getElementById('predictBtn');
+    const resultBox = document.getElementById('result');
+    const errorBox  = document.getElementById('errorBox');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      // Reset UI state
+      errorBox.style.display = 'none';
+      resultBox.style.display = 'none';
+      btn.disabled = true;
+      btn.classList.add('loading');
+
+      // 1) Collect every text/select field from the form
+      const formData = new FormData(form);
+      const payload = {};
+      formData.forEach((value, key) => { payload[key] = value; });
+
+      // 2) Checkboxes that are unchecked are skipped by FormData,
+      //    so fill them in explicitly as "0" / "1"
+      document.querySelectorAll('#predictForm input[type="checkbox"]').forEach((cb) => {
+        payload[cb.name] = cb.checked ? '1' : '0';
+      });
+
+      try {
+        // 3) Send the payload to Flask's /predict route
+        const response = await fetch('/predict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Prediction failed.');
+        }
+
+        // 4) Render the result
+        const isActive = data.prediction_code === 1;
+        resultBox.className = isActive ? 'is-active' : 'is-inactive';
+        document.getElementById('resultIcon').textContent = isActive ? '✅' : '⛔';
+        document.getElementById('resultTitle').textContent =
+          isActive ? 'Likely Active' : 'Likely Inactive';
+        document.getElementById('resultSub').textContent =
+          `${data.model_name} model · P(Active) = ${(data.probability_active * 100).toFixed(1)}%`;
+
+        document.getElementById('probFill').style.width = (data.probability_active * 100) + '%';
+        document.getElementById('probText').textContent =
+          (data.probability_active * 100).toFixed(1) + '% active';
+
+        resultBox.style.display = 'block';
+        resultBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      } catch (err) {
+        errorBox.textContent = '⚠ ' + err.message;
+        errorBox.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+      }
+    });
+  </script>
+</body>
+</html>
